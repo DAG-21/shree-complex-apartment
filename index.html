@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Flat 404 walkthrough</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#161613;color:#f7f3eb;font:16px system-ui,sans-serif}
@@ -16,6 +16,27 @@ progress{display:block;width:min(100%,300px);height:5px;margin-top:15px;accent-c
 canvas{touch-action:pan-y;cursor:grab}canvas:active{cursor:grabbing}
 canvas:focus-visible{outline:2px solid #dbc17d;outline-offset:-4px}
 #reset-look{pointer-events:auto;margin-top:12px;border:1px solid #eee1ce80;border-radius:5px;padding:6px 10px;background:#161613;color:#f7f3eb;font:inherit;font-size:.8rem;cursor:pointer}
+#mobile-controls{display:none}
+@media (hover:none) and (pointer:coarse){
+  .viewer.touch-look canvas{touch-action:none}
+  header{padding:calc(16px + env(safe-area-inset-top)) max(18px,env(safe-area-inset-left)) 26px}
+  header h1{font-size:clamp(23px,6vw,36px)}
+  footer{padding:32px max(16px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+  #direction{margin-bottom:3px;font-size:1rem}
+  #hint{display:block;line-height:1.25}
+  footer progress{display:none}
+  #mobile-controls{display:block;margin-top:6px;pointer-events:auto}
+  #mobile-controls[hidden]{display:none}
+  #mobile-actions{display:flex;gap:8px;align-items:center}
+  #mobile-actions button,#reset-look{min-height:44px;padding:6px 15px;border:1px solid #eee1ce80;border-radius:8px;background:#25241f;color:#fff;font:inherit}
+  #mobile-actions button[aria-pressed="true"]{background:#dbc17d;color:#171610;border-color:#dbc17d}
+  #mobile-actions #reset-look{margin:0 0 0 auto}
+  #walk-position{display:block;width:100%;height:44px;margin:0;accent-color:#dbc17d;touch-action:pan-x}
+}
+@media (hover:none) and (pointer:coarse) and (max-height:450px){
+  header{padding-bottom:12px}
+  footer{left:auto;width:min(72%,470px);padding-top:20px;background:linear-gradient(transparent,#181713ef)}
+}
 </style>
 <main>
   <div class="viewer">
@@ -25,6 +46,13 @@ canvas:focus-visible{outline:2px solid #dbc17d;outline-offset:-4px}
       <small id="hint">Scroll vertically to walk. Drag to look in any direction, or scroll sideways to turn.</small>
       <progress max="1" value="0" aria-label="Walkthrough progress"></progress>
       <button id="reset-look" type="button" hidden>Reset view</button>
+      <section id="mobile-controls" aria-label="Touch walkthrough controls" hidden>
+        <div id="mobile-actions">
+          <button id="look-mode" type="button" aria-pressed="true">Look</button>
+          <button id="walk-mode" type="button" aria-pressed="false">Walk</button>
+        </div>
+        <input id="walk-position" type="range" min="0" max="1000" step="1" value="0" aria-label="Walk through the apartment">
+      </section>
     </footer>
   </div>
 </main>
@@ -34,7 +62,6 @@ const canvas = document.querySelector('canvas');
 const gl = canvas.getContext('webgl', {antialias:true});
 const direction = document.querySelector('#direction');
 const progress = document.querySelector('progress');
-const track = document.querySelector('main');
 const viewer = document.querySelector('.viewer');
 
 if (!gl) {
@@ -145,6 +172,39 @@ if (!gl) {
   gl.enable(gl.DEPTH_TEST);
   let pending = false;
   const resetLook = document.querySelector('#reset-look');
+  const touchLayout = matchMedia('(hover:none) and (pointer:coarse)');
+  const mobileControls = document.querySelector('#mobile-controls');
+  const mobileActions = document.querySelector('#mobile-actions');
+  const hint = document.querySelector('#hint');
+  const lookMode = document.querySelector('#look-mode');
+  const walkMode = document.querySelector('#walk-mode');
+  const walkPosition = document.querySelector('#walk-position');
+  let touchLook = true;
+  function setTouchMode(looking) {
+    touchLook = looking;
+    viewer.classList.toggle('touch-look',touchLayout.matches && looking);
+    lookMode.setAttribute('aria-pressed',String(looking));
+    walkMode.setAttribute('aria-pressed',String(!looking));
+    hint.textContent = !touchLayout.matches
+      ? 'Scroll vertically to walk. Drag to look in any direction, or scroll sideways to turn.'
+      : looking ? 'Drag anywhere to look around. Slide the bar to walk.'
+        : 'Swipe up or down to walk. Tap Look to turn freely.';
+  }
+  function syncTouchLayout() {
+    mobileControls.hidden=!touchLayout.matches;
+    if (touchLayout.matches) mobileActions.append(resetLook);
+    else mobileControls.before(resetLook);
+    setTouchMode(touchLook);
+    schedule();
+  }
+  lookMode.addEventListener('click',()=>setTouchMode(true));
+  walkMode.addEventListener('click',()=>setTouchMode(false));
+  touchLayout.addEventListener('change',syncTouchLayout);
+  const scrollRange = () => Math.max(1,document.documentElement.scrollHeight-innerHeight);
+  walkPosition.addEventListener('input',()=>{
+    window.scrollTo(0,Number(walkPosition.value)/1000*scrollRange());
+    schedule();
+  });
   const fullTurn = Math.PI*2;
   let lookOffset = 0;
   let pitchOffset = 0;
@@ -166,7 +226,7 @@ if (!gl) {
   },{passive:false});
 
   canvas.addEventListener('pointerdown',event=>{
-    if (!event.isPrimary || event.button!==0) return;
+    if (!event.isPrimary || event.button!==0 || (event.pointerType==='touch' && !touchLook)) return;
     drag = { id:event.pointerId, startX:event.clientX, startY:event.clientY,
              lastX:event.clientX, lastY:event.clientY, touch:event.pointerType==='touch', turning:false };
     canvas.setPointerCapture(event.pointerId);
@@ -175,10 +235,11 @@ if (!gl) {
     if (!drag || drag.id!==event.pointerId) return;
     if (!drag.turning) {
       const dx=event.clientX-drag.startX, dy=event.clientY-drag.startY;
-      if (Math.hypot(dx,dy)<6 || (drag.touch && Math.abs(dx)<Math.abs(dy))) return;
+      if (Math.hypot(dx,dy)<(drag.touch ? 3 : 6)) return;
       drag.turning=true;
     }
-    rotate((drag.lastX-event.clientX)*.006,(event.clientY-drag.lastY)*.006);
+    const sensitivity = drag.touch ? .0045 : .006;
+    rotate((drag.lastX-event.clientX)*sensitivity,(event.clientY-drag.lastY)*sensitivity);
     drag.lastX=event.clientX;
     drag.lastY=event.clientY;
   });
@@ -197,7 +258,7 @@ if (!gl) {
     lookOffset=0;
     pitchOffset=0;
     resetLook.hidden=true;
-    canvas.focus({preventScroll:true});
+    if (!touchLayout.matches) canvas.focus({preventScroll:true});
     schedule();
   });
   // X, Y and yaw in the coordinates exported from Blender.
@@ -227,12 +288,16 @@ if (!gl) {
   ];
   function draw() {
     pending = false;
-    const ratio = Math.min(2,devicePixelRatio);
-    canvas.width = Math.round(canvas.clientWidth*ratio);
-    canvas.height = Math.round(canvas.clientHeight*ratio);
+    const ratio = Math.min(touchLayout.matches ? 1.5 : 2,devicePixelRatio);
+    const width = Math.round(canvas.clientWidth*ratio);
+    const height = Math.round(canvas.clientHeight*ratio);
+    if (canvas.width!==width || canvas.height!==height) {
+      canvas.width=width;
+      canvas.height=height;
+    }
     const aspect = canvas.width/canvas.height;
     gl.viewport(0,0,canvas.width,canvas.height);
-    const range = Math.max(1,track.offsetHeight-viewer.offsetHeight);
+    const range = scrollRange();
     const p = Math.min(1,Math.max(0,scrollY/range));
     const phase = p*(route.length-1);
     const index = Math.min(route.length-2,Math.floor(phase));
@@ -265,12 +330,14 @@ if (!gl) {
       gl.drawArrays(gl.TRIANGLES,points.length/9+index*6,6);
     });
     progress.value = p;
+    walkPosition.value = Math.round(p*1000);
     direction.textContent = (f < .5 ? a : b)[3];
+    walkPosition.setAttribute('aria-valuetext',direction.textContent+', '+Math.round(p*100)+' percent');
   }
   function schedule(){if (!pending){pending=true;requestAnimationFrame(draw);}}
   addEventListener('scroll',schedule,{passive:true});
   addEventListener('resize',schedule);
-  draw();
+  syncTouchLayout();
 }
 </script>
 </html>
